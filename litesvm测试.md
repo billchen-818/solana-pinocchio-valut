@@ -1,93 +1,57 @@
-use pinocchio::{AccountView, Address, ProgramResult, error::ProgramError};
-use pinocchio_system::instructions::Transfer;
+> 在上一篇文章中，我们使用 Pinocchio 从零实现了一个 Vault 金库合约。合约写好了，如何验证它的正确性？本文将深入介绍 Solana 生态中的合约测试方案：**LiteSVM**，对 Vault 合约的 `deposit` 和 `withdraw` 指令编写完整的测试用例，并对比各自的优劣和适用场景。
 
-struct DepositAccounts<'a> {
-    pub owner: &'a AccountView,
-    pub value: &'a AccountView,
-}
+---
 
-impl<'a> TryFrom<&'a [AccountView]> for DepositAccounts<'a> {
-    type Error = ProgramError;
+## 目录
 
-    fn try_from(accounts: &'a [AccountView]) -> Result<Self, Self::Error> {
-        let [owner, value, _] = accounts else {
-            return Err(ProgramError::NotEnoughAccountKeys);
-        };
+1. [测试方案概览](#一测试方案概览)
+2. [LiteSVM —— 轻量级全流程模拟测试](#二litesvm--轻量级全流程模拟测试)
+3. [总结](#三总结)
 
-        if !owner.is_signer() {
-            return Err(ProgramError::InvalidAccountOwner);
-        }
+---
 
-        if !value.owned_by(&pinocchio_system::ID) {
-            return Err(ProgramError::InvalidAccountOwner);
-        }
+## 一、测试方案概览
 
-        if value.lamports().ne(&0) {
-            return Err(ProgramError::InvalidAccountData);
-        }
+在 Solana 开发中，测试环节至关重要。以下是三种测试方案的简要概述：
 
-        let (value_key, _) =
-            Address::find_program_address(&[b"value", owner.address().as_ref()], &crate::ID);
-        if value.address().ne(&value_key) {
-            return Err(ProgramError::InvalidAccountOwner);
-        }
+| 框架 | 类型 | 语言 | 核心思想 |
+|------|------|------|----------|
+| **LiteSVM** | 进程内模拟器 | Rust | 在 Rust 测试中启动一个轻量级 SVM，模拟完整的交易处理流程 |
 
-        Ok(Self { owner, value })
-    }
-}
+---
 
-struct DepositInstructionData {
-    pub amount: u64,
-}
+## 二、LiteSVM —— 轻量级全流程模拟测试
 
-impl<'a> TryFrom<&'a [u8]> for DepositInstructionData {
-    type Error = ProgramError;
+### 2.1 简介
 
-    fn try_from(data: &'a [u8]) -> Result<Self, Self::Error> {
-        if data.len() != size_of::<u64>() {
-            return Err(ProgramError::InvalidInstructionData);
-        }
+[LiteSVM](https://github.com/LiteSVM/litesvm) 是一个运行在 Rust 进程内的轻量级 Solana 虚拟机模拟器。它模拟了完整的交易处理（Transaction Processing）流水线，包括签名验证、账户加载、指令执行、CPI 调用等。
 
-        let amount = u64::from_le_bytes(data.try_into().unwrap());
+**核心特点：**
+- **进程内运行**：无需启动外部进程，测试启动极快（毫秒级）
+- **完整交易模拟**：支持签名验证、CPI、PDA 签名等完整特性
+- **与 `solana-sdk` 兼容**：使用标准的 `Transaction`、`Instruction`、`Keypair` 等类型
+- **状态持久化**：在同一个 `LiteSVM` 实例中，多次交易之间的状态是连续的
 
-        if amount.eq(&0) {
-            return Err(ProgramError::InvalidInstructionData);
-        }
+### 2.2 依赖配置
 
-        Ok(Self { amount })
-    }
-}
+在 `Cargo.toml` 中添加：
 
-#[allow(private_interfaces)]
-pub struct Deposit<'a> {
-    pub accounts: DepositAccounts<'a>,
-    pub instruction_data: DepositInstructionData,
-}
+```toml
+[dev-dependencies]
+litesvm = "0.10.0"
+solana-account = "3.4.0"
+solana-instruction = "3.3.0"
+solana-keypair = "3.1.2"
+solana-message = "3.1.0"
+solana-pubkey = { version = "4.1.0", features = ["curve25519"] }
+solana-signer = "3.0.0"
+solana-system-interface = "3.1.0"
+solana-transaction = "3.1.0"
+```
 
-impl<'a> TryFrom<(&'a [AccountView], &'a [u8])> for Deposit<'a> {
-    type Error = ProgramError;
+### 2.3 Deposit 测试
 
-    fn try_from((accounts, data): (&'a [AccountView], &'a [u8])) -> Result<Self, Self::Error> {
-        let accounts = DepositAccounts::try_from(accounts)?;
-        let instruction_data = DepositInstructionData::try_from(data)?;
-        Ok(Self {
-            accounts,
-            instruction_data,
-        })
-    }
-}
-
-impl<'a> Deposit<'a> {
-    pub fn process(&mut self) -> ProgramResult {
-        Transfer {
-            from: self.accounts.owner,
-            to: self.accounts.value,
-            lamports: self.instruction_data.amount,
-        }
-        .invoke()?;
-        Ok(())
-    }
-}
+```rust
 
 #[cfg(test)]
 mod litesvm_tests {
@@ -327,3 +291,49 @@ mod litesvm_tests {
         assert!(vault_account.is_none() || vault_account.unwrap().lamports == 0);
     }
 }
+```
+
+### 2.4 运行测试
+
+```sh
+cargo build-sbf
+cargo test
+```
+
+> 说明：这里有个小问题，我之前的合约在账户验证的时候，有个问题，逻辑写反了，应该修改成如下代码样式：
+
+```rust
+        if !value.owned_by(&pinocchio_system::ID) {
+            return Err(ProgramError::InvalidAccountOwner);
+        }
+```
+
+最后运行测试会得到下面的结果：
+
+![](https://fastly.jsdelivr.net/gh/bucketio/img7@main/2026/03/23/1774263506945-84ab37ee-2dfd-497b-9286-5a272985f410.png)
+
+### 2.5 LiteSVM 测试要点
+
+1. **程序加载**：通过 `add_program_from_file` 加载编译后的 `.so` 文件，需要先执行 `cargo build-sbf` 编译程序
+2. **状态连续**：同一个 `LiteSVM` 实例中，deposit 后的余额变化会被 withdraw 看到
+3. **CPI 支持**：完整支持 CPI 调用，包括 System Program 的 Transfer
+4. **签名验证**：会验证交易签名，与真实环境一致
+
+---
+
+## 三、总结
+
+| 工具 | 一句话总结 |
+|------|-----------|
+| **LiteSVM** | 像模拟器 —— 在进程内跑完整的 Solana 流程 |
+
+Solana 合约测试不仅仅只拥有LiteSVM一种工具。后续我门会介绍其它的工具。选择合适的工具组合，不仅可以提高开发效率，更能避免上线后的安全风险。
+
+希望这篇文章能帮助你在 Solana 开发中建立科学的测试习惯！
+
+---
+
+## 参考链接
+
+- [LiteSVM GitHub](https://github.com/LiteSVM/litesvm)
+- [Pinocchio GitHub](https://github.com/anza-xyz/pinocchio)
