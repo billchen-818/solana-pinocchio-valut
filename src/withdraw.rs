@@ -31,7 +31,7 @@ impl<'a> TryFrom<&'a [AccountView]> for WithdrawAccounts<'a> {
         }
 
         let (vault_key, bump) =
-            Address::find_program_address(&[b"vault", owner.address().as_ref()], &crate::ID);
+            Address::find_program_address(&[b"value", owner.address().as_ref()], &crate::ID);
         if vault.address().ne(&vault_key) {
             return Err(ProgramError::InvalidAccountOwner);
         }
@@ -58,7 +58,7 @@ impl<'a> TryFrom<&'a [AccountView]> for Withdraw<'a> {
 impl<'a> Withdraw<'a> {
     pub fn process(&mut self) -> ProgramResult {
         let seeds = [
-            Seed::from(b"vault"),
+            Seed::from(b"value"),
             Seed::from(self.accounts.owner.address().as_ref()),
             Seed::from(&self.accounts.bumps),
         ];

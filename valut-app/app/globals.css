@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f4efe4;
+  --foreground: #1f1c18;
+  --surface: rgba(255, 249, 238, 0.84);
+  --surface-strong: rgba(255, 246, 229, 0.94);
+  --line: rgba(57, 41, 18, 0.14);
+  --line-strong: rgba(57, 41, 18, 0.22);
+  --muted: #655948;
+  --accent: #c65d2e;
+  --accent-soft: #f1c8aa;
+  --success: #22543d;
+  --danger: #8c2f39;
+  --shadow: 0 28px 80px -38px rgba(96, 56, 20, 0.34);
+  --radius: 1.25rem;
+  --font-sans: var(--font-space-grotesk), system-ui, sans-serif;
+  --font-mono: var(--font-ibm-plex-mono), ui-monospace, monospace;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-bg1: var(--background);
+  --color-foreground: var(--foreground);
+  --color-cream: var(--surface-strong);
+  --color-border: var(--line-strong);
+  --color-border-strong: var(--line-strong);
+  --color-border-low: var(--line);
+  --color-primary: var(--accent);
+  --color-muted: var(--muted);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-transparent;
+  }
+
+  body {
+    @apply bg-bg1 text-foreground antialiased;
+    font-family: var(--font-sans);
+    background-image:
+      radial-gradient(circle at top left, rgba(241, 200, 170, 0.9), transparent 22%),
+      radial-gradient(circle at top right, rgba(198, 93, 46, 0.12), transparent 28%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(244, 239, 228, 0.92));
+    color-scheme: light;
+  }
+
+  ::selection {
+    background: rgba(198, 93, 46, 0.22);
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    background: var(--surface);
+    backdrop-filter: blur(18px);
+    box-shadow: var(--shadow);
+  }
+
+  .panel-edge {
+    border: 1px solid var(--line);
+  }
+
+  .metric-label {
+    @apply text-[0.72rem] uppercase tracking-[0.22em] text-muted;
+  }
+
+  .metric-value {
+    @apply text-lg font-semibold tracking-tight text-foreground;
+  }
+}
