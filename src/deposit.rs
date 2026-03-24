@@ -99,11 +99,11 @@ mod litesvm_tests {
     use solana_signer::Signer;
     use solana_transaction::Transaction;
 
-    // 与合约中的 ID 保持一致
+    // 与合约中的 ID 保持一致 (BGV2SH7HUa6vfnY88UEqVwwLEoxPLXkafZVSM11H2arB)
     const PROGRAM_ID: Pubkey = Pubkey::new_from_array([
-        0x76, 0x61, 0x6c, 0x75, 0x65, 0x2d, 0x70, 0x72, 0x6f, 0x67, 0x72, 0x61, 0x6d, 0x2d, 0x69,
-        0x64, 0x2d, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x2d, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
-        0x38, 0x39,
+        0x98, 0x8c, 0x44, 0xe3, 0x33, 0x1d, 0xde, 0x36, 0xf8, 0xe7, 0x4e, 0x62, 0xa3, 0xf6, 0xf5,
+        0x81, 0x86, 0x21, 0xcd, 0x07, 0x95, 0x26, 0x74, 0xc4, 0x20, 0x75, 0xe5, 0xf7, 0x98, 0x2a,
+        0x4a, 0xf0,
     ]);
 
     /// 构建 deposit 指令
@@ -336,11 +336,11 @@ mod mollusk_tests {
     use solana_pubkey::Pubkey;
     use solana_system_interface;
 
-    //const PROGRAM_ID: Pubkey = Pubkey::new_from_array([0x00; 32]);
+    // BGV2SH7HUa6vfnY88UEqVwwLEoxPLXkafZVSM11H2arB
     const PROGRAM_ID: Pubkey = Pubkey::new_from_array([
-        0x76, 0x61, 0x6c, 0x75, 0x65, 0x2d, 0x70, 0x72, 0x6f, 0x67, 0x72, 0x61, 0x6d, 0x2d, 0x69,
-        0x64, 0x2d, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x2d, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
-        0x38, 0x39,
+        0x98, 0x8c, 0x44, 0xe3, 0x33, 0x1d, 0xde, 0x36, 0xf8, 0xe7, 0x4e, 0x62, 0xa3, 0xf6, 0xf5,
+        0x81, 0x86, 0x21, 0xcd, 0x07, 0x95, 0x26, 0x74, 0xc4, 0x20, 0x75, 0xe5, 0xf7, 0x98, 0x2a,
+        0x4a, 0xf0,
     ]);
 
     /// 派生 deposit PDA (seed: "value")
@@ -664,6 +664,199 @@ mod mollusk_tests {
         assert!(
             result.program_result.is_err(),
             "Withdraw from empty vault should fail"
+        );
+    }
+}
+
+#[cfg(test)]
+mod surfpool_tests {
+    use solana_client::rpc_client::RpcClient;
+    use solana_instruction::{AccountMeta, Instruction};
+    use solana_keypair::Keypair;
+    use solana_message::Message;
+    use solana_pubkey::Pubkey;
+    use solana_signer::Signer;
+    use solana_transaction::Transaction;
+
+    // 合约内部硬编码的 ID，与部署地址一致 (BGV2SH7HUa6vfnY88UEqVwwLEoxPLXkafZVSM11H2arB)
+    const HARDCODED_ID: Pubkey = Pubkey::new_from_array([
+        0x98, 0x8c, 0x44, 0xe3, 0x33, 0x1d, 0xde, 0x36, 0xf8, 0xe7, 0x4e, 0x62, 0xa3, 0xf6, 0xf5,
+        0x81, 0x86, 0x21, 0xcd, 0x07, 0x95, 0x26, 0x74, 0xc4, 0x20, 0x75, 0xe5, 0xf7, 0x98, 0x2a,
+        0x4a, 0xf0,
+    ]);
+
+    /// 部署在 Surfpool 上的实际程序地址（由 value-keypair.json 派生）
+    fn deployed_program_id() -> Pubkey {
+        // `solana program deploy target/deploy/value.so` 部署后的地址
+        // 如果重新部署，需要更新此地址
+        "BGV2SH7HUa6vfnY88UEqVwwLEoxPLXkafZVSM11H2arB"
+            .parse()
+            .unwrap()
+    }
+
+    /// PDA 派生使用合约硬编码的 ID（deposit 种子: "value"）
+    fn find_deposit_pda(owner: &Pubkey) -> (Pubkey, u8) {
+        Pubkey::find_program_address(&[b"value", owner.as_ref()], &HARDCODED_ID)
+    }
+
+    /// PDA 派生使用合约硬编码的 ID（withdraw 种子: "vault"）
+    fn find_vault_pda(owner: &Pubkey) -> (Pubkey, u8) {
+        Pubkey::find_program_address(&[b"vault", owner.as_ref()], &HARDCODED_ID)
+    }
+
+    /// 加载本地默认密钥对（Surfpool 预置了该账户的余额）
+    fn load_local_keypair() -> Keypair {
+        let keypair_path = format!("{}/.config/solana/id.json", std::env::var("HOME").unwrap());
+        solana_keypair::read_keypair_file(&keypair_path)
+            .unwrap_or_else(|e| panic!("无法读取密钥对 {}: {:?}", keypair_path, e))
+    }
+
+    /// 从预置账户转账给新账户，返回新账户的 Keypair
+    fn fund_new_account(client: &RpcClient, funder: &Keypair, amount: u64) -> Keypair {
+        let new_account = Keypair::new();
+        // 手动构建 System Program Transfer 指令（指令索引 2，u64 LE）
+        let mut data = vec![2, 0, 0, 0]; // Transfer instruction index
+        data.extend_from_slice(&amount.to_le_bytes());
+        let transfer_ix = Instruction {
+            program_id: solana_system_interface::program::ID,
+            accounts: vec![
+                AccountMeta::new(funder.pubkey(), true),
+                AccountMeta::new(new_account.pubkey(), false),
+            ],
+            data,
+        };
+        let blockhash = client.get_latest_blockhash().unwrap();
+        let tx = Transaction::new(
+            &[funder],
+            Message::new(&[transfer_ix], Some(&funder.pubkey())),
+            blockhash,
+        );
+        client.send_and_confirm_transaction(&tx).unwrap();
+        new_account
+    }
+
+    #[test]
+    #[ignore] // 需要先启动 Surfpool 并部署程序: surfpool start + solana program deploy target/deploy/value.so
+    fn test_deposit_via_surfpool() {
+        let client = RpcClient::new("http://localhost:8899");
+        let program_id = deployed_program_id();
+
+        // 使用 Surfpool 预置资金的本地密钥对作为 funder
+        let funder = load_local_keypair();
+        let balance = client.get_balance(&funder.pubkey()).unwrap();
+        assert!(balance > 0, "Funder 账户无余额，请确认 Surfpool 已启动");
+
+        // 每次测试创建新账户，确保 PDA 是全新的
+        let owner = fund_new_account(&client, &funder, 5_000_000_000); // 5 SOL
+        println!("New owner: {}", owner.pubkey());
+
+        // deposit PDA 使用合约硬编码 ID 派生
+        let (vault_pda, _) = find_deposit_pda(&owner.pubkey());
+        println!("Deposit PDA: {}", vault_pda);
+
+        // 构建 deposit 指令
+        let deposit_amount: u64 = 1_000_000_000; // 1 SOL
+        let mut data = vec![0x00];
+        data.extend_from_slice(&deposit_amount.to_le_bytes());
+
+        let instruction = Instruction {
+            program_id,
+            accounts: vec![
+                AccountMeta::new(owner.pubkey(), true),
+                AccountMeta::new(vault_pda, false),
+                AccountMeta::new_readonly(solana_system_interface::program::ID, false),
+            ],
+            data,
+        };
+
+        let blockhash = client.get_latest_blockhash().unwrap();
+        let tx = Transaction::new(
+            &[&owner],
+            Message::new(&[instruction], Some(&owner.pubkey())),
+            blockhash,
+        );
+
+        let sig = client.send_and_confirm_transaction(&tx).unwrap();
+        println!("Deposit tx: {}", sig);
+
+        // 验证 vault 余额
+        let vault_balance = client.get_balance(&vault_pda).unwrap();
+        assert_eq!(vault_balance, deposit_amount);
+        println!("Deposit 成功：vault 余额 = {} lamports", vault_balance);
+    }
+
+    #[test]
+    #[ignore] // 需要先启动 Surfpool 并部署程序
+    fn test_withdraw_via_surfpool() {
+        let client = RpcClient::new("http://localhost:8899");
+        let program_id = deployed_program_id();
+
+        let funder = load_local_keypair();
+        let balance = client.get_balance(&funder.pubkey()).unwrap();
+        assert!(balance > 0, "Funder 账户无余额，请确认 Surfpool 已启动");
+
+        // 创建新账户用于 withdraw 测试
+        let owner = fund_new_account(&client, &funder, 5_000_000_000);
+        println!("New owner: {}", owner.pubkey());
+
+        // withdraw PDA（种子: "vault"）
+        let (vault_pda, _) = find_vault_pda(&owner.pubkey());
+        println!("Withdraw PDA: {}", vault_pda);
+
+        // 先从 funder 给 vault PDA 转入资金（模拟已 deposit 状态）
+        let vault_fund_amount: u64 = 2_000_000_000;
+        let mut fund_data = vec![2, 0, 0, 0]; // Transfer instruction index
+        fund_data.extend_from_slice(&vault_fund_amount.to_le_bytes());
+        let fund_vault_ix = Instruction {
+            program_id: solana_system_interface::program::ID,
+            accounts: vec![
+                AccountMeta::new(funder.pubkey(), true),
+                AccountMeta::new(vault_pda, false),
+            ],
+            data: fund_data,
+        };
+        let blockhash = client.get_latest_blockhash().unwrap();
+        let fund_tx = Transaction::new(
+            &[&funder],
+            Message::new(&[fund_vault_ix], Some(&funder.pubkey())),
+            blockhash,
+        );
+        client.send_and_confirm_transaction(&fund_tx).unwrap();
+        println!("Funded vault PDA with {} lamports", vault_fund_amount);
+
+        let owner_balance_before = client.get_balance(&owner.pubkey()).unwrap();
+
+        // 执行 withdraw
+        let withdraw_ix = Instruction {
+            program_id,
+            accounts: vec![
+                AccountMeta::new(owner.pubkey(), true),
+                AccountMeta::new(vault_pda, false),
+                AccountMeta::new_readonly(solana_system_interface::program::ID, false),
+            ],
+            data: vec![0x01],
+        };
+
+        let blockhash = client.get_latest_blockhash().unwrap();
+        let withdraw_tx = Transaction::new(
+            &[&owner],
+            Message::new(&[withdraw_ix], Some(&owner.pubkey())),
+            blockhash,
+        );
+
+        let sig = client.send_and_confirm_transaction(&withdraw_tx).unwrap();
+        println!("Withdraw tx: {}", sig);
+
+        // 验证 vault 余额为 0
+        let vault_balance = client.get_balance(&vault_pda).unwrap_or(0);
+        assert_eq!(vault_balance, 0);
+
+        // 验证 owner 余额增加
+        let owner_balance_after = client.get_balance(&owner.pubkey()).unwrap();
+        assert!(owner_balance_after > owner_balance_before);
+        println!(
+            "Withdraw 成功：owner 余额增加 {} lamports",
+            owner_balance_after - owner_balance_before
         );
     }
 }
