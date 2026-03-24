@@ -327,3 +327,343 @@ mod litesvm_tests {
         assert!(vault_account.is_none() || vault_account.unwrap().lamports == 0);
     }
 }
+
+#[cfg(test)]
+mod mollusk_tests {
+    use mollusk_svm::Mollusk;
+    use solana_account::Account;
+    use solana_instruction::{AccountMeta, Instruction};
+    use solana_pubkey::Pubkey;
+    use solana_system_interface;
+
+    //const PROGRAM_ID: Pubkey = Pubkey::new_from_array([0x00; 32]);
+    const PROGRAM_ID: Pubkey = Pubkey::new_from_array([
+        0x76, 0x61, 0x6c, 0x75, 0x65, 0x2d, 0x70, 0x72, 0x6f, 0x67, 0x72, 0x61, 0x6d, 0x2d, 0x69,
+        0x64, 0x2d, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x2d, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+        0x38, 0x39,
+    ]);
+
+    /// 派生 deposit PDA (seed: "value")
+    fn find_deposit_pda(owner: &Pubkey) -> (Pubkey, u8) {
+        Pubkey::find_program_address(&[b"value", owner.as_ref()], &PROGRAM_ID)
+    }
+
+    /// 派生 withdraw PDA (seed: "vault")
+    fn find_vault_pda(owner: &Pubkey) -> (Pubkey, u8) {
+        Pubkey::find_program_address(&[b"vault", owner.as_ref()], &PROGRAM_ID)
+    }
+
+    /// 创建一个 Mollusk 实例
+    fn setup_mollusk() -> Mollusk {
+        Mollusk::new(&PROGRAM_ID, "target/deploy/value")
+    }
+
+    #[test]
+    fn test_deposit_success() {
+        let mollusk = setup_mollusk();
+
+        // 1、设置 owner 账户（有足够 SOL 余额）
+        let owner = Pubkey::new_unique();
+        let owner_account = Account {
+            lamports: 5_000_000_000, // 5 SOL
+            data: vec![],
+            owner: solana_system_interface::program::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
+
+        // 2、设置 deposit PDA 账户（初始为空，owner 必须是 System Program）
+        let (vault_pda, _bump) = find_deposit_pda(&owner);
+        let vault_account = Account {
+            lamports: 0,
+            data: vec![],
+            owner: solana_system_interface::program::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
+
+        // 3、构建 deposit 指令
+        let deposit_amount: u64 = 1_000_000_000; // 1 SOL
+        let mut instruction_data = vec![0x00]; // deposit 标识
+        instruction_data.extend_from_slice(&deposit_amount.to_le_bytes());
+
+        let instruction = Instruction {
+            program_id: PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(owner, true),
+                AccountMeta::new(vault_pda, false),
+                AccountMeta::new_readonly(solana_system_interface::program::ID, false),
+            ],
+            data: instruction_data,
+        };
+
+        // 4、获取 Mollusk 预设的系统程序账户
+        let (system_id, system_account) = mollusk_svm::program::keyed_account_for_system_program();
+
+        // 5、在执行时传入这个预设账户
+        let result = mollusk.process_instruction(
+            &instruction,
+            &[
+                (owner, owner_account.into()), // 建议使用 .into() 转换为 AccountSharedData
+                (vault_pda, vault_account.into()),
+                (system_id, system_account), // <--- 使用这个！
+            ],
+        );
+
+        // 6、断言执行成功
+        assert!(
+            !result.program_result.is_err(),
+            "Deposit failed: {:?}",
+            result.program_result
+        );
+
+        // 7、检查账户状态变化
+        // vault 应该收到了 deposit_amount
+        let resulting_vault = &result.resulting_accounts[1];
+        assert_eq!(resulting_vault.1.lamports, deposit_amount);
+
+        // owner 应该减少了 deposit_amount
+        let resulting_owner = &result.resulting_accounts[0];
+        assert_eq!(resulting_owner.1.lamports, 5_000_000_000 - deposit_amount);
+
+        // 8、打印 CU 消耗
+        println!("Deposit CU consumed: {}", result.compute_units_consumed);
+    }
+
+    #[test]
+    fn test_deposit_zero_amount_fails() {
+        let mollusk = setup_mollusk();
+
+        let owner = Pubkey::new_unique();
+        let owner_account = Account {
+            lamports: 5_000_000_000,
+            data: vec![],
+            owner: solana_system_interface::program::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
+
+        let (vault_pda, _) = find_vault_pda(&owner);
+        let vault_account = Account {
+            lamports: 0,
+            data: vec![],
+            owner: solana_system_interface::program::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
+
+        let system_program_account = Account {
+            lamports: 1,
+            data: vec![],
+            owner: Pubkey::new_from_array([0x00; 32]),
+            executable: true,
+            rent_epoch: 0,
+        };
+
+        // 存入 0 SOL
+        let mut instruction_data = vec![0x00];
+        instruction_data.extend_from_slice(&0u64.to_le_bytes());
+
+        let instruction = Instruction {
+            program_id: PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(owner, true),
+                AccountMeta::new(vault_pda, false),
+                AccountMeta::new_readonly(solana_system_interface::program::ID, false),
+            ],
+            data: instruction_data,
+        };
+
+        let result = mollusk.process_instruction(
+            &instruction,
+            &[
+                (owner, owner_account),
+                (vault_pda, vault_account),
+                (solana_system_interface::program::ID, system_program_account),
+            ],
+        );
+
+        // 应该失败（金额为 0）
+        assert!(
+            result.program_result.is_err(),
+            "Deposit with zero amount should fail"
+        );
+    }
+
+    #[test]
+    fn test_deposit_invalid_instruction_data() {
+        let mollusk = setup_mollusk();
+
+        let owner = Pubkey::new_unique();
+        let owner_account = Account {
+            lamports: 5_000_000_000,
+            data: vec![],
+            owner: solana_system_interface::program::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
+
+        let (vault_pda, _) = find_vault_pda(&owner);
+        let vault_account = Account {
+            lamports: 0,
+            data: vec![],
+            owner: solana_system_interface::program::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
+
+        let system_program_account = Account {
+            lamports: 1,
+            data: vec![],
+            owner: Pubkey::new_from_array([0x00; 32]),
+            executable: true,
+            rent_epoch: 0,
+        };
+
+        // 只传 3 字节（不足 8 字节 u64）
+        let instruction_data = vec![0x00, 0x01, 0x02, 0x03];
+
+        let instruction = Instruction {
+            program_id: PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(owner, true),
+                AccountMeta::new(vault_pda, false),
+                AccountMeta::new_readonly(solana_system_interface::program::ID, false),
+            ],
+            data: instruction_data,
+        };
+
+        let result = mollusk.process_instruction(
+            &instruction,
+            &[
+                (owner, owner_account),
+                (vault_pda, vault_account),
+                (solana_system_interface::program::ID, system_program_account),
+            ],
+        );
+
+        assert!(
+            result.program_result.is_err(),
+            "Invalid instruction data should cause failure"
+        );
+    }
+
+    #[test]
+    fn test_withdraw_success() {
+        let mollusk = setup_mollusk();
+
+        let owner = Pubkey::new_unique();
+        let owner_account = Account {
+            lamports: 5_000_000_000,
+            data: vec![],
+            owner: solana_system_interface::program::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
+
+        // 模拟 vault 已有余额（之前已经 deposit 过）
+        let (vault_pda, _bump) = find_vault_pda(&owner);
+        let vault_balance = 2_000_000_000u64; // 2 SOL
+        let vault_account = Account {
+            lamports: vault_balance,
+            data: vec![],
+            owner: solana_system_interface::program::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
+
+        // 获取 Mollusk 预设的系统程序账户
+        let (system_id, system_account) = mollusk_svm::program::keyed_account_for_system_program();
+
+        // 构建 withdraw 指令
+        let instruction = Instruction {
+            program_id: PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(owner, true),
+                AccountMeta::new(vault_pda, false),
+                AccountMeta::new_readonly(solana_system_interface::program::ID, false),
+            ],
+            data: vec![0x01], // withdraw 标识
+        };
+
+        let result = mollusk.process_instruction(
+            &instruction,
+            &[
+                (owner, owner_account.into()),
+                (vault_pda, vault_account.into()),
+                (system_id, system_account),
+            ],
+        );
+
+        assert!(
+            !result.program_result.is_err(),
+            "Withdraw failed: {:?}",
+            result.program_result
+        );
+
+        // vault 余额应为 0
+        let resulting_vault = &result.resulting_accounts[1];
+        assert_eq!(resulting_vault.1.lamports, 0);
+
+        // owner 应收回全部 vault 余额
+        let resulting_owner = &result.resulting_accounts[0];
+        assert_eq!(resulting_owner.1.lamports, 5_000_000_000 + vault_balance);
+
+        println!("Withdraw CU consumed: {}", result.compute_units_consumed);
+    }
+
+    #[test]
+    fn test_withdraw_empty_vault_fails() {
+        let mollusk = setup_mollusk();
+
+        let owner = Pubkey::new_unique();
+        let owner_account = Account {
+            lamports: 5_000_000_000,
+            data: vec![],
+            owner: solana_system_interface::program::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
+
+        let (vault_pda, _) = find_vault_pda(&owner);
+        let vault_account = Account {
+            lamports: 0, // 空 vault
+            data: vec![],
+            owner: solana_system_interface::program::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
+
+        let system_program_account = Account {
+            lamports: 1,
+            data: vec![],
+            owner: Pubkey::new_from_array([0x00; 32]),
+            executable: true,
+            rent_epoch: 0,
+        };
+
+        let instruction = Instruction {
+            program_id: PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(owner, true),
+                AccountMeta::new(vault_pda, false),
+                AccountMeta::new_readonly(solana_system_interface::program::ID, false),
+            ],
+            data: vec![0x01],
+        };
+
+        let result = mollusk.process_instruction(
+            &instruction,
+            &[
+                (owner, owner_account),
+                (vault_pda, vault_account),
+                (solana_system_interface::program::ID, system_program_account),
+            ],
+        );
+
+        assert!(
+            result.program_result.is_err(),
+            "Withdraw from empty vault should fail"
+        );
+    }
+}
